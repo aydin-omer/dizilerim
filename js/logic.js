@@ -156,6 +156,55 @@ export function formatDuration(minutes) {
   return `${mins} dk`;
 }
 
+// ---------------------------------------------------------------- Öneriler
+
+/** İsim karşılaştırması için sadeleştirme ("The Office (US)" → "the office us"). */
+export function normName(s) {
+  return (s || '')
+    .toLocaleLowerCase('tr')
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .trim();
+}
+
+/**
+ * Önerilerin dayanacağı diziler: en yüksek puan verdiğin ve en çok izlediğin diziler.
+ * Bırakılan diziler hariç. Her birine 1–2 arası bir ağırlık verilir.
+ */
+export function pickSeeds(state, n = 5) {
+  const scored = Object.values(state.shows)
+    .filter((s) => s.status !== 'dropped')
+    .map((show) => {
+      const watched = show.episodes.filter((e) => state.watched[e.id]).length;
+      const score = (show.rating || 0) * 10 + Math.min(watched, 30) + (show.status === 'done' ? 5 : 0);
+      return { show, score };
+    })
+    .filter((x) => x.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, n);
+  const max = scored[0]?.score || 1;
+  return scored.map(({ show, score }) => ({ show, weight: 1 + score / max }));
+}
+
+/**
+ * Birden fazla dizinin öneri listesini birleştirir.
+ * Birden çok dizide çıkan ve listenin üstünde olanlar daha yüksek puan alır.
+ * `exclude`: { ids: Set(tmdbId), names: Set(normName) } — zaten listende olanlar.
+ */
+export function mergeRecommendations(lists, exclude, minVotes = 10) {
+  const map = new Map();
+  for (const { seed, items } of lists) {
+    items.forEach((it, rank) => {
+      if ((it.votes || 0) < minVotes) return;
+      if (exclude.ids.has(it.id) || exclude.names.has(normName(it.name)) || exclude.names.has(normName(it.original))) return;
+      const e = map.get(it.id) || { ...it, score: 0, because: [] };
+      e.score += seed.weight * (1 - rank / 40);
+      if (!e.because.includes(seed.name)) e.because.push(seed.name);
+      map.set(it.id, e);
+    });
+  }
+  return [...map.values()].sort((a, b) => b.score - a.score);
+}
+
 const pad = (n) => String(n).padStart(2, '0');
 export function code(ep) {
   return `S${pad(ep.season)}E${pad(ep.number)}`;

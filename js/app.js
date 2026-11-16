@@ -1,7 +1,8 @@
 // Uygulamanın ana dosyası: ekranlar (view'lar), kullanıcı etkileşimleri ve günlük kontrol.
 
 import { getState, save, replaceState, isValidBackup, requestPersistence } from './store.js';
-import { searchShows, fetchShow } from './api.js';
+import { searchShows, fetchShow, lookupShowId } from './api.js';
+import * as T from './tmdb.js';
 import * as L from './logic.js';
 import { esc, toast, sheet, icon } from './ui.js';
 
@@ -20,6 +21,7 @@ const ui = {
   revealed: new Set(), // spoiler'ı açılan bölüm id'leri
   adding: new Set(),
   checking: false,
+  recs: { loading: false, error: '' },
 };
 
 const fmtDate = new Intl.DateTimeFormat('tr-TR', { day: 'numeric', month: 'short', year: 'numeric' });
@@ -256,8 +258,8 @@ function renderResults() {
   const { q, results, loading, error } = ui.search;
   const s = getState();
   if (loading && !results.length) return void (el.innerHTML = '<p class="muted pad">Aranıyor…</p>');
+  if (!q.trim()) return void (el.innerHTML = recsHtml());
   if (error) return void (el.innerHTML = `<p class="muted pad">${esc(error)}</p>`);
-  if (!q.trim()) return void (el.innerHTML = '<p class="muted pad">Takip etmek istediğin diziyi ara.</p>');
   if (!results.length && q.trim().length >= 2) return void (el.innerHTML = '<p class="muted pad">Sonuç bulunamadı.</p>');
 
   el.innerHTML = results
@@ -274,10 +276,9 @@ function renderResults() {
     .join('');
 }
 
-async function addShowFlow(id) {
-  const r = ui.search.results.find((x) => x.id === id);
-  const choice = await sheet({
-    title: r ? r.name : 'Dizi ekle',
+function chooseList(title) {
+  return sheet({
+    title: title || 'Dizi ekle',
     message: 'Bu diziyi hangi listeye ekleyelim?',
     buttons: [
       { label: 'İzliyorum', value: 'watching', style: 'primary' },
@@ -286,26 +287,221 @@ async function addShowFlow(id) {
       { label: 'Vazgeç', value: null, style: 'ghost' },
     ],
   });
+}
+
+/** Diziyi TVmaze'den çekip listeye ekler. Hata olursa fırlatır. */
+async function addShowById(id, choice) {
+  const show = await fetchShow(id);
+  const s = getState();
+  const now = Date.now();
+  s.shows[id] = { ...show, status: choice, rating: 0, note: '', addedAt: now, fetchedAt: now };
+  if (choice === 'done') {
+    // Tarihi bilinmeyen eski izlemeler: 1 ile işaretlenir (istatistikte "bu ay"a sayılmasın diye)
+    for (const e of show.episodes) if (L.isAired(e, now) && !s.watched[e.id]) s.watched[e.id] = 1;
+  }
+  commit();
+  toast(`${show.name} eklendi`, { label: 'Aç', run: () => (location.hash = `#/show/${id}`) });
+}
+
+async function addShowFlow(id) {
+  const r = ui.search.results.find((x) => x.id === id);
+  const choice = await chooseList(r?.name);
   if (!choice) return;
 
   ui.adding.add(id);
   renderResults();
   try {
-    const show = await fetchShow(id);
-    const s = getState();
-    const now = Date.now();
-    s.shows[id] = { ...show, status: choice, rating: 0, note: '', addedAt: now, fetchedAt: now };
-    if (choice === 'done') {
-      // Tarihi bilinmeyen eski izlemeler: 1 ile işaretlenir (istatistikte "bu ay"a sayılmasın diye)
-      for (const e of show.episodes) if (L.isAired(e, now) && !s.watched[e.id]) s.watched[e.id] = 1;
-    }
-    commit();
-    toast(`${show.name} eklendi`, { label: 'Aç', run: () => (location.hash = `#/show/${id}`) });
+    await addShowById(id, choice);
   } catch {
     toast('Dizi eklenemedi, internet bağlantını kontrol et.');
   }
   ui.adding.delete(id);
   renderResults();
+}
+
+// ---------------------------------------------------------------- Öneriler (Ara sekmesi, arama kutusu boşken)
+
+function libraryExclusions(s) {
+  const ids = new Set();
+  const names = new Set();
+  for (const show of Object.values(s.shows)) {
+    const tid = s.tmdb.ids[show.id];
+    if (tid) ids.add(tid);
+    names.add(L.normName(show.name));
+  }
+  for (const h of s.tmdb.hidden) ids.add(h);
+  return { ids, names };
+}
+
+function recsHtml() {
+  const s = getState();
+  const shows = Object.values(s.shows);
+  const head = (extra = '') =>
+    `<div class="section-head recs-head"><h2>Sana önerilenler</h2>${extra}</div>`;
+
+  if (!shows.length) {
+    return '<p class="muted pad">Takip etmek istediğin diziyi ara. Birkaç dizi ekleyip puan verdikçe burada sana özel öneriler çıkacak.</p>';
+  }
+  if (!s.settings.tmdbKey) {
+    return `${head()}
+      <div class="card">
+        <p class="muted" style="margin:0 0 12px">Sevdiğin dizilere benzeyenleri önerebilmem için ücretsiz bir TMDB anahtarı gerekiyor.</p>
+        <a class="btn primary" href="#/profile">Anahtar ekle</a>
+      </div>`;
+  }
+
+  const seeds = L.pickSeeds(s);
+  if (!seeds.length) {
+    return `${head()}<p class="muted pad">Dizilerine puan ver ya da bölüm işaretle; öneriler ona göre hazırlanacak.</p>`;
+  }
+
+  // Gerekirse arka planda yenile (günde bir ya da dizilerin/puanların değiştiyse)
+  queueMicrotask(() => loadRecs());
+
+  const refresh = ui.recs.loading
+    ? '<span class="meta">Hazırlanıyor…</span>'
+    : `<button class="link" data-action="recs-refresh">${icon.refresh} Yenile</button>`;
+
+  if (ui.recs.error) return `${head(refresh)}<p class="muted pad">${esc(ui.recs.error)}</p>`;
+
+  const ex = libraryExclusions(s);
+  const items = (s.tmdb.recs?.items || [])
+    .filter((it) => !ex.ids.has(it.id) && !ex.names.has(L.normName(it.name)) && !ex.names.has(L.normName(it.original)))
+    .slice(0, 20);
+
+  if (!items.length) {
+    return `${head(refresh)}<p class="muted pad">${ui.recs.loading ? 'Öneriler hazırlanıyor…' : 'Şimdilik öneri bulunamadı.'}</p>`;
+  }
+
+  return `${head(refresh)}
+    ${items.map(recCard).join('')}
+    <p class="about">Öneriler <a href="https://www.themoviedb.org" target="_blank" rel="noopener">TMDB</a> verileriyle hazırlanır.</p>`;
+}
+
+function recCard(it) {
+  const img = T.posterUrl(it.poster);
+  const posterHtml = img
+    ? `<img class="thumb" src="${esc(img)}" alt="" loading="lazy">`
+    : poster({ name: it.name, image: null }, 'thumb');
+  const meta = [it.year, it.vote ? `★ ${it.vote.toFixed(1)}` : ''].filter(Boolean).join(' · ');
+  const adding = ui.adding.has(`t${it.id}`);
+  return `
+    <div class="rec">
+      ${posterHtml}
+      <div class="rec-text">
+        <div class="ep-show">${esc(it.name)}</div>
+        ${meta ? `<div class="meta">${esc(meta)}</div>` : ''}
+        <div class="because">Benzer: ${esc(it.because.slice(0, 2).join(', '))}</div>
+        ${it.overview ? `<p class="rec-sum">${esc(it.overview)}</p>` : ''}
+        <div class="rec-actions">
+          ${adding ? '<span class="pill">Ekleniyor…</span>' : `<button class="pill primary" data-action="add-rec" data-tmdb="${it.id}">Ekle</button>`}
+          <button class="pill" data-action="hide-rec" data-tmdb="${it.id}">İlgilenmiyorum</button>
+        </div>
+      </div>
+    </div>`;
+}
+
+async function loadRecs(force = false) {
+  const s = getState();
+  const key = s.settings.tmdbKey;
+  if (!key || ui.recs.loading || !navigator.onLine) return;
+  const seeds = L.pickSeeds(s);
+  if (!seeds.length) return;
+  const seedKey = seeds.map((x) => `${x.show.id}:${x.show.rating || 0}`).join(',');
+  const cached = s.tmdb.recs;
+  if (!force && !ui.recs.error && cached && cached.seedKey === seedKey && Date.now() - cached.ts < L.DAY) return;
+  if (!force && ui.recs.error) return; // hata sonrası kendiliğinden tekrar deneme; "Yenile" ile denenir
+
+  ui.recs.loading = true;
+  ui.recs.error = '';
+  renderResults();
+  try {
+    const lists = [];
+    for (const { show, weight } of seeds) {
+      let tid = s.tmdb.ids[show.id];
+      if (tid === undefined) {
+        tid = await T.findTmdbId(key, { imdb: show.imdb, tvdb: show.tvdb, name: show.name, year: show.premiered?.slice(0, 4) });
+        s.tmdb.ids[show.id] = tid || 0;
+      }
+      if (!tid) continue;
+      lists.push({ seed: { name: show.name, weight }, items: await T.recommendations(key, tid) });
+    }
+    s.tmdb.recs = { ts: Date.now(), seedKey, items: L.mergeRecommendations(lists, libraryExclusions(s)).slice(0, 40) };
+    commit();
+  } catch (e) {
+    ui.recs.error =
+      e.status === 401
+        ? "TMDB anahtarı geçersiz görünüyor. Profil → Ayarlar'dan kontrol et."
+        : 'Öneriler alınamadı. İnternet bağlantını kontrol edip Yenile\'ye bas.';
+  }
+  ui.recs.loading = false;
+  renderResults();
+}
+
+async function addRecFlow(tmdbId) {
+  const s = getState();
+  const rec = s.tmdb.recs?.items.find((x) => x.id === tmdbId);
+  if (!rec) return;
+  const choice = await chooseList(rec.name);
+  if (!choice) return;
+
+  ui.adding.add(`t${tmdbId}`);
+  renderResults();
+  try {
+    const ext = await T.externalIds(s.settings.tmdbKey, tmdbId);
+    const id = await lookupShowId(ext, [rec.original, rec.name]);
+    if (!id) toast("Bu dizi TVmaze'de bulunamadı. Ara'dan adıyla deneyebilirsin.");
+    else if (s.shows[id]) toast('Bu dizi zaten listende.');
+    else {
+      s.tmdb.ids[id] = tmdbId;
+      await addShowById(id, choice);
+    }
+  } catch {
+    toast('Dizi eklenemedi, internet bağlantını kontrol et.');
+  }
+  ui.adding.delete(`t${tmdbId}`);
+  renderResults();
+}
+
+function hideRec(tmdbId) {
+  const s = getState();
+  s.tmdb.hidden.push(tmdbId);
+  commit();
+  renderResults();
+  toast('Bu öneri gizlendi', {
+    label: 'Geri al',
+    run: () => {
+      s.tmdb.hidden = s.tmdb.hidden.filter((x) => x !== tmdbId);
+      commit();
+      renderResults();
+    },
+  });
+}
+
+async function saveTmdbKey() {
+  const input = document.getElementById('tmdb-key');
+  const key = input.value.trim();
+  const s = getState();
+  if (!key) {
+    s.settings.tmdbKey = '';
+    s.tmdb.recs = null;
+    commit();
+    toast('TMDB anahtarı kaldırıldı');
+    return render();
+  }
+  try {
+    await T.checkKey(key);
+  } catch (e) {
+    toast(e.status === 401 ? 'Anahtar geçersiz, kontrol edip tekrar dene.' : 'Anahtar kontrol edilemedi, internet bağlantını kontrol et.');
+    return;
+  }
+  s.settings.tmdbKey = key;
+  s.tmdb.recs = null;
+  ui.recs.error = '';
+  commit();
+  input.blur();
+  toast('Anahtar kaydedildi. Öneriler Ara sekmesinde!', { label: 'Göster', run: () => (location.hash = '#/search') });
+  render();
 }
 
 // ---------------------------------------------------------------- Ekran: Dizilerim
@@ -371,6 +567,7 @@ function viewShow(idStr) {
         <h2>${esc(show.name)}</h2>
         <div class="meta">${esc(meta)}</div>
         ${show.genres.length ? `<div class="meta">${esc(show.genres.join(', '))}</div>` : ''}
+        <a class="imdb" href="${esc(imdbUrl(show))}" target="_blank" rel="noopener">IMDb ↗</a>
         <div class="stars" role="group" aria-label="Puanım">
           ${[1, 2, 3, 4, 5].map((n) => `<button class="star ${show.rating >= n ? 'on' : ''}" data-action="rate" data-show="${id}" data-v="${n}" aria-label="${n} yıldız">${icon.star}</button>`).join('')}
         </div>
@@ -427,6 +624,13 @@ function viewShow(idStr) {
       render();
     });
   });
+}
+
+/** IMDb numarası biliniyorsa doğrudan dizi sayfası, yoksa IMDb araması. */
+function imdbUrl(show) {
+  return show.imdb
+    ? `https://www.imdb.com/title/${show.imdb}/`
+    : `https://www.imdb.com/find/?q=${encodeURIComponent(show.name)}&s=tt&ttype=tv`;
 }
 
 function seasonBlock(show, season, episodes, isOpen, now) {
@@ -537,6 +741,17 @@ function viewProfile() {
         <div><strong>Spoiler koruması</strong><div class="meta">İzlemediğin bölümlerin açıklamalarını gizle</div></div>
         <input type="checkbox" class="switch" data-action="toggle-spoiler" ${s.settings.spoiler ? 'checked' : ''}>
       </label>
+      <div class="setting col">
+        <div>
+          <strong>TMDB anahtarı</strong>
+          <div class="meta">Öneriler için gerekli. themoviedb.org → Ayarlar → API'den ücretsiz alınır. Sadece bu telefonda saklanır.</div>
+        </div>
+        <div class="key-row">
+          <input id="tmdb-key" type="password" placeholder="API anahtarını yapıştır" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" value="${esc(s.settings.tmdbKey)}">
+          <button class="pill primary" data-action="save-key">Kaydet</button>
+        </div>
+        ${s.settings.tmdbKey ? `<div class="meta ok">${icon.check} Anahtar kayıtlı</div>` : ''}
+      </div>
       ${checkInfo()}`
     )}
 
@@ -550,9 +765,16 @@ function viewProfile() {
       <input type="file" id="import-file" accept="application/json,.json" hidden>`
     )}
 
-    <p class="about">Dizi verileri <a href="https://www.tvmaze.com" target="_blank" rel="noopener">TVmaze</a> tarafından sağlanır (CC BY-SA).</p>`;
+    <p class="about">
+      Dizi verileri <a href="https://www.tvmaze.com" target="_blank" rel="noopener">TVmaze</a> tarafından sağlanır (CC BY-SA).<br>
+      Öneriler <a href="https://www.themoviedb.org" target="_blank" rel="noopener">TMDB</a> API'si ile hazırlanır;
+      bu uygulama TMDB tarafından onaylanmış ya da desteklenmiş değildir.
+    </p>`;
 
   view.querySelector('#import-file').addEventListener('change', importData);
+  view.querySelector('#tmdb-key').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') saveTmdbKey();
+  });
 }
 
 async function exportData() {
@@ -823,6 +1045,15 @@ document.addEventListener('click', (e) => {
       return render();
     case 'add-show':
       return void addShowFlow(Number(el.dataset.id));
+    case 'add-rec':
+      return void addRecFlow(Number(el.dataset.tmdb));
+    case 'hide-rec':
+      return hideRec(Number(el.dataset.tmdb));
+    case 'recs-refresh':
+      ui.recs.error = '';
+      return void loadRecs(true);
+    case 'save-key':
+      return void saveTmdbKey();
     case 'lib-filter':
       ui.libFilter = el.dataset.v;
       return render();

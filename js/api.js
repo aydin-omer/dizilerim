@@ -31,7 +31,35 @@ function basic(s) {
     genres: s.genres || [],
     summary: stripHtml(s.summary),
     url: s.url || `https://www.tvmaze.com/shows/${s.id}`,
+    imdb: s.externals?.imdb || '',
+    tvdb: s.externals?.thetvdb || null,
   };
+}
+
+/**
+ * IMDb / TheTVDB numarasından TVmaze dizi numarasını bul.
+ * Önce TVmaze'in lookup servisini dener; olmazsa isimle arayıp numaraları eşleştirir.
+ */
+export async function lookupShowId({ imdb, tvdb }, names = []) {
+  const tries = [
+    ['imdb', imdb],
+    ['thetvdb', tvdb],
+  ];
+  for (const [param, value] of tries) {
+    if (!value) continue;
+    try {
+      const s = await get(`/lookup/shows?${param}=${encodeURIComponent(value)}`);
+      if (s?.id) return s.id;
+    } catch {
+      /* bulunamadı ya da engellendi — sıradakini dene */
+    }
+  }
+  for (const name of names.filter(Boolean)) {
+    const results = await searchShows(name);
+    const hit = results.find((r) => (imdb && r.imdb === imdb) || (tvdb && r.tvdb === tvdb));
+    if (hit) return hit.id;
+  }
+  return null;
 }
 
 export async function searchShows(query) {

@@ -253,3 +253,23 @@ section { margin: 14px 0 22px; }
 }
 #toast.show { opacity: 1; transform: none; pointer-events: auto; }
 #toast button { color: var(--accent); font-weight: 700; flex-shrink: 0; }
+
+/* ---------- Öneriler ---------- */
+.recs-head { margin-top: 6px; }
+.rec { display: flex; gap: 12px; background: var(--surface); border-radius: var(--radius); padding: 12px; margin-bottom: 10px; }
+.rec .thumb { width: 64px; height: 92px; }
+.rec-text { flex: 1; min-width: 0; }
+.because { font-size: 12.5px; color: var(--accent); font-weight: 600; margin-top: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rec-sum { margin: 6px 0 0; font-size: 13.5px; color: var(--muted); display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.rec-actions { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+
+/* IMDb bağlantısı */
+.imdb { align-self: flex-start; margin-top: 4px; background: #f5c518; color: #000; font-weight: 800; font-size: 12.5px; padding: 3px 8px; border-radius: 6px; letter-spacing: .02em; }
+
+/* Ayarlar: TMDB anahtarı */
+.setting.col { flex-direction: column; align-items: stretch; margin-top: 10px; }
+.key-row { display: flex; gap: 8px; align-items: center; }
+.key-row input { flex: 1; min-width: 0; height: 40px; border: 0; border-radius: 10px; padding: 0 12px; background: var(--surface-2); color: var(--text); font-size: 16px; outline: none; }
+.key-row input:focus { box-shadow: 0 0 0 2px var(--accent); }
+.meta.ok { color: var(--ok); display: flex; align-items: center; gap: 4px; }
+.meta.ok svg { width: 15px; height: 15px; }

@@ -8,7 +8,12 @@ const defaults = () => ({
   watched: {}, // { [episodeId]: izlendiği zaman (ms) }
   lastCheck: 0, // son "yeni bölüm" kontrolü
   newEpisodes: [], // [{ showId, epId }]
-  settings: { spoiler: true },
+  settings: { spoiler: true, tmdbKey: '' },
+  tmdb: {
+    ids: {}, // { [tvmazeId]: tmdbId (bulunamadıysa 0) }
+    recs: null, // { ts, seedKey, items: [...] } — günde bir yenilenir
+    hidden: [], // "İlgilenmiyorum" denen TMDB numaraları
+  },
 });
 
 function normalize(s) {
@@ -20,6 +25,7 @@ function normalize(s) {
     watched: s.watched || {},
     newEpisodes: Array.isArray(s.newEpisodes) ? s.newEpisodes : [],
     settings: { ...d.settings, ...(s.settings || {}) },
+    tmdb: { ...d.tmdb, ...(s.tmdb || {}) },
   };
 }
 
