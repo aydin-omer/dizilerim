@@ -25,6 +25,8 @@ The main goal of this project is learning how an app goes from idea to release.
 - Statuses: Watching / Plan to watch / Completed / Dropped
 - Upcoming episode calendar
 - Stats, personal rating and notes
+- Personal recommendations based on your favourite shows (TMDB)
+- Quick link to each show's IMDb page
 - Backup / restore as a JSON file
 - Works offline
 
@@ -39,6 +41,7 @@ js/app.js             Screens and user interactions
 js/logic.js           Pure functions (next episode, progress, stats…)
 js/store.js           On-device storage (localStorage)
 js/api.js             TVmaze API requests
+js/tmdb.js            TMDB API requests (recommendations)
 js/ui.js              Toasts, bottom sheets, icons
 tests/                Unit tests
 ```
@@ -58,4 +61,7 @@ node --test
 ## Data & privacy
 
 Show data is provided by [TVmaze](https://www.tvmaze.com/api) (CC BY-SA).
+Recommendations use the [TMDB](https://www.themoviedb.org) API but this app is not endorsed or certified by TMDB.
+To enable recommendations, get a free TMDB API key and paste it under **Profil → Ayarlar** in the app.
+The key is stored only on your device and is never committed to this repository.
 Your personal data (watched episodes, notes, ratings) is stored only on your device and is never sent to any server.

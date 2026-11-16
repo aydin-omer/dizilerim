@@ -77,3 +77,30 @@ test('formatDuration ve code', () => {
   assert.equal(L.formatDuration(60 * 24 + 120), '1 gün 2 sa');
   assert.equal(L.code({ season: 1, number: 5 }), 'S01E05');
 });
+
+test('normName', () => {
+  assert.equal(L.normName('The Office (US)'), 'the office us');
+  assert.equal(L.normName('İçerde'), 'içerde');
+});
+
+test('pickSeeds: puan ve izleme sayısına göre, bırakılanlar hariç', () => {
+  const mk = (id, rating, status, eps) => ({ id, name: 'D' + id, rating, status, episodes: eps.map((e) => ({ id: e })) });
+  const state = {
+    shows: { 1: mk(1, 5, 'watching', [11]), 2: mk(2, 0, 'watching', [21, 22]), 3: mk(3, 5, 'dropped', [31]), 4: mk(4, 0, 'plan', [41]) },
+    watched: { 11: 1, 21: 1, 22: 1, 31: 1 },
+  };
+  const seeds = L.pickSeeds(state);
+  assert.deepEqual(seeds.map((s) => s.show.id), [1, 2]);
+  assert.equal(seeds[0].weight, 2);
+});
+
+test('mergeRecommendations: ortak öneriler üste çıkar, listedekiler ve az oylananlar elenir', () => {
+  const it = (id, name, votes = 100) => ({ id, name, original: name, votes });
+  const lists = [
+    { seed: { name: 'A', weight: 2 }, items: [it(1, 'Bir'), it(2, 'İki'), it(9, 'Az Oylanan', 3)] },
+    { seed: { name: 'B', weight: 1 }, items: [it(3, 'Üç'), it(2, 'İki'), it(4, 'Listemde')] },
+  ];
+  const out = L.mergeRecommendations(lists, { ids: new Set(), names: new Set(['listemde']) });
+  assert.deepEqual(out.map((x) => x.id), [2, 1, 3]);
+  assert.deepEqual(out[0].because, ['A', 'B']);
+});

@@ -2,7 +2,7 @@
 // Uygulama dosyaları "önce ağ" ile alınır: internet varsa her zaman en güncel sürüm gelir,
 // yoksa önbellekteki sürüm açılır. Dizi afişleri ise önbellekten verilir.
 
-const VERSION = 'v1';
+const VERSION = 'v2';
 const APP_CACHE = `app-${VERSION}`;
 const IMG_CACHE = 'images';
 
@@ -15,6 +15,7 @@ const APP_FILES = [
   './js/api.js',
   './js/logic.js',
   './js/store.js',
+  './js/tmdb.js',
   './js/ui.js',
   './icons/icon-192.png',
   './icons/apple-touch-icon.png',
@@ -54,8 +55,8 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // Dizi afişleri: önce önbellek
-  if (url.hostname === 'static.tvmaze.com') {
+  // Dizi afişleri (TVmaze ve TMDB): önce önbellek
+  if (url.hostname === 'static.tvmaze.com' || url.hostname === 'image.tmdb.org') {
     event.respondWith(
       caches.open(IMG_CACHE).then((c) =>
         c.match(req).then(
@@ -69,5 +70,5 @@ self.addEventListener('fetch', (event) => {
       )
     );
   }
-  // TVmaze API istekleri: dokunma, doğrudan ağa gitsin
+  // API istekleri (TVmaze, TMDB): dokunma, doğrudan ağa gitsin
 });
